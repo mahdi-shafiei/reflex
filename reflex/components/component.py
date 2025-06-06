@@ -7,7 +7,6 @@ import copy
 import dataclasses
 import functools
 import inspect
-import sys
 import typing
 from abc import ABC, ABCMeta, abstractmethod
 from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -20,10 +19,8 @@ from typing import (
     Annotated,
     Any,
     ClassVar,
-    ForwardRef,
     Generic,
     TypeVar,
-    _eval_type,  # pyright: ignore [reportAttributeAccessIssue]
     cast,
     get_args,
     get_origin,
@@ -55,6 +52,7 @@ from reflex.event import (
     EventSpec,
     no_args_event_spec,
     parse_args_spec,
+    pointer_event_spec,
     run_script,
     unwrap_var_annotation,
 )
@@ -73,46 +71,6 @@ from reflex.vars.function import ArgsFunctionOperation, FunctionStringVar, Funct
 from reflex.vars.number import ternary_operation
 from reflex.vars.object import ObjectVar
 from reflex.vars.sequence import LiteralArrayVar, LiteralStringVar, StringVar
-
-
-def resolve_annotations(
-    raw_annotations: Mapping[str, type[Any]], module_name: str | None
-) -> dict[str, type[Any]]:
-    """Partially taken from typing.get_type_hints.
-
-    Resolve string or ForwardRef annotations into type objects if possible.
-
-    Args:
-        raw_annotations: The raw annotations to resolve.
-        module_name: The name of the module.
-
-    Returns:
-        The resolved annotations.
-    """
-    module = sys.modules.get(module_name, None) if module_name is not None else None
-
-    base_globals: dict[str, Any] | None = (
-        module.__dict__ if module is not None else None
-    )
-
-    annotations = {}
-    for name, value in raw_annotations.items():
-        if isinstance(value, str):
-            if sys.version_info == (3, 10, 0):
-                value = ForwardRef(value, is_argument=False)
-            else:
-                value = ForwardRef(value, is_argument=False, is_class=True)
-        try:
-            if sys.version_info >= (3, 13):
-                value = _eval_type(value, base_globals, None, type_params=())
-            else:
-                value = _eval_type(value, base_globals, None)
-        except NameError:
-            # this is ok, it can be fixed with update_forward_refs
-            pass
-        annotations[name] = value
-    return annotations
-
 
 FIELD_TYPE = TypeVar("FIELD_TYPE")
 
@@ -228,7 +186,7 @@ class BaseComponentMeta(ABCMeta):
         # Add the field to the class
         inherited_fields: dict[str, ComponentField] = {}
         own_fields: dict[str, ComponentField] = {}
-        resolved_annotations = resolve_annotations(
+        resolved_annotations = types.resolve_annotations(
             namespace.get("__annotations__", {}), namespace["__module__"]
         )
 
@@ -534,12 +492,12 @@ def _components_from(
     return ()
 
 
-DEFAULT_TRIGGERS: dict[str, types.ArgsSpec | Sequence[types.ArgsSpec]] = {
+DEFAULT_TRIGGERS: Mapping[str, types.ArgsSpec | Sequence[types.ArgsSpec]] = {
     EventTriggers.ON_FOCUS: no_args_event_spec,
     EventTriggers.ON_BLUR: no_args_event_spec,
-    EventTriggers.ON_CLICK: no_args_event_spec,
-    EventTriggers.ON_CONTEXT_MENU: no_args_event_spec,
-    EventTriggers.ON_DOUBLE_CLICK: no_args_event_spec,
+    EventTriggers.ON_CLICK: pointer_event_spec,  # pyright: ignore [reportAssignmentType]
+    EventTriggers.ON_CONTEXT_MENU: pointer_event_spec,  # pyright: ignore [reportAssignmentType]
+    EventTriggers.ON_DOUBLE_CLICK: pointer_event_spec,  # pyright: ignore [reportAssignmentType]
     EventTriggers.ON_MOUSE_DOWN: no_args_event_spec,
     EventTriggers.ON_MOUSE_ENTER: no_args_event_spec,
     EventTriggers.ON_MOUSE_LEAVE: no_args_event_spec,
@@ -548,6 +506,7 @@ DEFAULT_TRIGGERS: dict[str, types.ArgsSpec | Sequence[types.ArgsSpec]] = {
     EventTriggers.ON_MOUSE_OVER: no_args_event_spec,
     EventTriggers.ON_MOUSE_UP: no_args_event_spec,
     EventTriggers.ON_SCROLL: no_args_event_spec,
+    EventTriggers.ON_SCROLL_END: no_args_event_spec,
     EventTriggers.ON_MOUNT: no_args_event_spec,
     EventTriggers.ON_UNMOUNT: no_args_event_spec,
 }
@@ -907,9 +866,8 @@ class Component(BaseComponent, ABC):
         for key, value in kwargs.items():
             setattr(self, key, value)
 
-    def get_event_triggers(
-        self,
-    ) -> dict[str, types.ArgsSpec | Sequence[types.ArgsSpec]]:
+    @classmethod
+    def get_event_triggers(cls) -> dict[str, types.ArgsSpec | Sequence[types.ArgsSpec]]:
         """Get the event triggers for the component.
 
         Returns:
@@ -926,9 +884,9 @@ class Component(BaseComponent, ABC):
                 )
                 else no_args_event_spec
             )
-            for name, field in self.get_fields().items()
+            for name, field in cls.get_fields().items()
             if field.type_origin is EventHandler
-        }
+        }  # pyright: ignore [reportOperatorIssue]
 
     def __repr__(self) -> str:
         """Represent the component in React.
@@ -2178,7 +2136,7 @@ class CustomComponent(Component):
                         annotation=arg._var_type,
                     )
                     for name, arg in zip(
-                        names, parse_args_spec(event.args_spec), strict=True
+                        names, parse_args_spec(event.args_spec)[0], strict=True
                     )
                 ]
             )
