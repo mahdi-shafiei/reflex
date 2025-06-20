@@ -320,7 +320,8 @@ def stream_logs(
 
     # Windows uvicorn bug
     # https://github.com/reflex-dev/reflex/issues/2335
-    accepted_return_codes = [0, -2, 15] if constants.IS_WINDOWS else [0, -2]
+    # 130 is the exit code that react router returns when it is interrupted by a signal.
+    accepted_return_codes = [0, -2, 15, 130] if constants.IS_WINDOWS else [0, -2, 130]
     if process.returncode not in accepted_return_codes and not suppress_errors:
         console.error(f"{message} failed with exit code {process.returncode}")
         if "".join(logs).count("CERT_HAS_EXPIRED") > 0:
@@ -412,12 +413,12 @@ def show_progress(message: str, process: subprocess.Popen, checkpoints: list[str
         task = progress.add_task(f"{message}: ", total=len(checkpoints))
         for line in stream_logs(message, process, progress=progress):
             # Check for special strings and update the progress bar.
-            for special_string in checkpoints:
-                if special_string in line:
-                    progress.update(task, advance=1)
-                    if special_string == checkpoints[-1]:
-                        progress.update(task, completed=len(checkpoints))
-                    break
+            special_string = checkpoints[0]
+            if special_string in line:
+                progress.update(task, advance=1)
+                checkpoints.pop(0)
+            if not checkpoints:
+                break
 
 
 def atexit_handler():

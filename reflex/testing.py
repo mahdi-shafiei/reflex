@@ -22,7 +22,7 @@ import types
 from collections.abc import AsyncIterator, Callable, Coroutine, Sequence
 from http.server import SimpleHTTPRequestHandler
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
 import psutil
 import uvicorn
@@ -241,7 +241,7 @@ class AppHarness:
     def _initialize_app(self):
         # disable telemetry reporting for tests
 
-        os.environ["TELEMETRY_ENABLED"] = "false"
+        os.environ["REFLEX_TELEMETRY_ENABLED"] = "false"
         CustomComponent.create().get_component.cache_clear()
         self.app_path.mkdir(parents=True, exist_ok=True)
         if self.app_source is not None:
@@ -344,8 +344,12 @@ class AppHarness:
         )
         self.backend.shutdown = self._get_backend_shutdown_handler()
         with chdir(self.app_path):
+            print(  # noqa: T201
+                "Creating backend in a new thread..."
+            )  # for pytest diagnosis
             self.backend_thread = threading.Thread(target=self.backend.run)
         self.backend_thread.start()
+        print("Backend started.")  # for pytest diagnosis #noqa: T201
 
     async def _reset_backend_state_manager(self):
         """Reset the StateManagerRedis event loop affinity.
@@ -377,10 +381,14 @@ class AppHarness:
         # Set up the frontend.
         with chdir(self.app_path):
             config = reflex.config.get_config()
+            print("Polling for servers...")  # for pytest diagnosis #noqa: T201
             config.api_url = "http://{}:{}".format(
-                *self._poll_for_servers().getsockname(),
+                *self._poll_for_servers(timeout=30).getsockname(),
             )
+            print("Building frontend...")  # for pytest diagnosis #noqa: T201
             reflex.utils.build.setup_frontend(self.app_path)
+
+        print("Frontend starting...")  # for pytest diagnosis #noqa: T201
 
         # Start the frontend.
         self.frontend_process = reflex.utils.processes.new_process(
@@ -392,19 +400,20 @@ class AppHarness:
                 "dev",
             ],
             cwd=self.app_path / reflex.utils.prerequisites.get_web_dir(),
-            env={"PORT": "0"},
+            env={"PORT": "0", "NO_COLOR": "1"},
             **FRONTEND_POPEN_ARGS,
         )
 
     def _wait_frontend(self):
+        if self.frontend_process is None or self.frontend_process.stdout is None:
+            msg = "Frontend process has no stdout."
+            raise RuntimeError(msg)
         while self.frontend_url is None:
-            line = (
-                self.frontend_process.stdout.readline()  # pyright: ignore [reportOptionalMemberAccess]
-            )
+            line = self.frontend_process.stdout.readline()
             if not line:
                 break
             print(line)  # for pytest diagnosis #noqa: T201
-            m = re.search(reflex.constants.Next.FRONTEND_LISTENING_REGEX, line)
+            m = re.search(reflex.constants.ReactRouter.FRONTEND_LISTENING_REGEX, line)
             if m is not None:
                 self.frontend_url = m.group(1)
                 config = reflex.config.get_config()
@@ -517,7 +526,7 @@ class AppHarness:
         target: Callable[[], T],
         timeout: TimeoutType = None,
         step: TimeoutType = None,
-    ) -> T | bool:
+    ) -> T | Literal[False]:
         """Generic polling logic.
 
         Args:
@@ -535,9 +544,10 @@ class AppHarness:
             step = POLL_INTERVAL
         deadline = time.time() + timeout
         while time.time() < deadline:
-            success = target()
-            if success:
-                return success
+            with contextlib.suppress(Exception):
+                success = target()
+                if success:
+                    return success
             time.sleep(step)
         return False
 
@@ -840,6 +850,57 @@ class AppHarness:
             raise TimeoutError(msg)
         return state_manager.states
 
+    @staticmethod
+    def poll_for_or_raise_timeout(
+        target: Callable[[], T],
+        timeout: TimeoutType = None,
+        step: TimeoutType = None,
+    ) -> T:
+        """Poll target callable for a truthy return value.
+
+        Like `_poll_for`, but raises a `TimeoutError` if the target does not
+        return a truthy value within the timeout.
+
+        Args:
+            target: callable that returns truthy if polling condition is met.
+            timeout: max polling time
+            step: interval between checking target()
+
+        Returns:
+            return value of target() if truthy within timeout
+
+        Raises:
+            TimeoutError: when target does not return a truthy value within timeout
+        """
+        result = AppHarness._poll_for(
+            target=target,
+            timeout=timeout,
+            step=step,
+        )
+        if result is False:
+            msg = "Target did not return a truthy value while polling."
+            raise TimeoutError(msg)
+        return result
+
+    @staticmethod
+    def expect(
+        target: Callable[[], T],
+        timeout: TimeoutType = None,
+        step: TimeoutType = None,
+    ):
+        """Expect a target callable to return a truthy value within the timeout.
+
+        Args:
+            target: callable that returns truthy if polling condition is met.
+            timeout: max polling time
+            step: interval between checking target()
+        """
+        AppHarness.poll_for_or_raise_timeout(
+            target=target,
+            timeout=timeout,
+            step=step,
+        )
+
 
 class SimpleHTTPRequestHandlerCustomErrors(SimpleHTTPRequestHandler):
     """SimpleHTTPRequestHandler with custom error page handling."""
@@ -922,7 +983,7 @@ class Subdir404TCPServer(socketserver.TCPServer):
 class AppHarnessProd(AppHarness):
     """AppHarnessProd executes a reflex app in-process for testing.
 
-    In prod mode, instead of running `next dev` the app is exported as static
+    In prod mode, instead of running `react-router dev` the app is exported as static
     files and served via the builtin python http.server with custom 404 redirect
     handling. Additionally, the backend runs in multi-worker mode.
     """
@@ -937,7 +998,7 @@ class AppHarnessProd(AppHarness):
             / reflex.constants.Dirs.STATIC
         )
         error_page_map = {
-            404: web_root / "404.html",
+            404: web_root / "404" / "index.html",
         }
         with Subdir404TCPServer(
             ("", 0),
@@ -954,9 +1015,11 @@ class AppHarnessProd(AppHarness):
         # Set up the frontend.
         with chdir(self.app_path):
             config = reflex.config.get_config()
+            print("Polling for servers...")  # for pytest diagnosis #noqa: T201
             config.api_url = "http://{}:{}".format(
-                *self._poll_for_servers().getsockname(),
+                *self._poll_for_servers(timeout=30).getsockname(),
             )
+            print("Building frontend...")  # for pytest diagnosis #noqa: T201
 
             get_config().loglevel = reflex.constants.LogLevel.INFO
 
@@ -972,6 +1035,8 @@ class AppHarnessProd(AppHarness):
                 loglevel=reflex.constants.LogLevel.INFO,
                 env=reflex.constants.Env.PROD,
             )
+
+        print("Frontend starting...")  # for pytest diagnosis #noqa: T201
 
         self.frontend_thread = threading.Thread(target=self._run_frontend)
         self.frontend_thread.start()
@@ -996,8 +1061,12 @@ class AppHarnessProd(AppHarness):
             ),
         )
         self.backend.shutdown = self._get_backend_shutdown_handler()
+        print(  # noqa: T201
+            "Creating backend in a new thread..."
+        )
         self.backend_thread = threading.Thread(target=self.backend.run)
         self.backend_thread.start()
+        print("Backend started.")  # for pytest diagnosis #noqa: T201
 
     def _poll_for_servers(self, timeout: TimeoutType = None) -> socket.socket:
         try:

@@ -90,6 +90,7 @@ DEFAULT_IMPORTS = {
         "EventSpec",
         "EventType",
         "KeyInputInfo",
+        "PointerEventInfo",
     ],
     "reflex.style": ["Style"],
     "reflex.vars.base": ["Var"],
@@ -366,7 +367,7 @@ def _extract_class_props_as_ast_nodes(
     all_props = []
     kwargs = []
     for target_class in clzs:
-        event_triggers = target_class._create([]).get_event_triggers()
+        event_triggers = target_class.get_event_triggers()
         # Import from the target class to ensure type hints are resolvable.
         exec(f"from {target_class.__module__} import *", type_hint_globals)
         for name, value in target_class.__annotations__.items():
@@ -409,7 +410,7 @@ def _extract_class_props_as_ast_nodes(
                             )
                         ),
                     ),
-                    ast.Constant(value=default),
+                    ast.Constant(value=default),  # pyright: ignore [reportArgumentType]
                 )
             )
     return kwargs
@@ -444,7 +445,11 @@ def type_to_ast(typ: Any, cls: type) -> ast.expr:
 
                 if all(a == b for a, b in zipped) and len(typ_parts) == len(cls_parts):
                     return ast.Name(id=typ.__name__)
-
+                if (
+                    typ.__module__ in DEFAULT_IMPORTS
+                    and typ.__name__ in DEFAULT_IMPORTS[typ.__module__]
+                ):
+                    return ast.Name(id=typ.__name__)
                 return ast.Name(id=typ.__module__ + "." + typ.__name__)
             return ast.Name(id=typ.__name__)
         if hasattr(typ, "_name"):
@@ -607,7 +612,7 @@ def _generate_component_create_functiondef(
             return ast.Name(id=f"{' | '.join(map(ast.unparse, all_count_args_type))}")
         return ast.Name(id="EventType[Any]")
 
-    event_triggers = clz._create([]).get_event_triggers()
+    event_triggers = clz.get_event_triggers()
 
     # event handler kwargs
     kwargs.extend(
@@ -1337,12 +1342,19 @@ class PyiGenerator:
 
 
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Generate .pyi stub files")
+    parser.add_argument(
+        "targets",
+        nargs="*",
+        default=["reflex/components", "reflex/experimental", "reflex/__init__.py"],
+        help="Target directories/files to process",
+    )
+    args = parser.parse_args()
+
     logging.basicConfig(level=logging.INFO)
     logging.getLogger("blib2to3.pgen2.driver").setLevel(logging.INFO)
 
     gen = PyiGenerator()
-    gen.scan_all(
-        ["reflex/components", "reflex/experimental", "reflex/__init__.py"],
-        None,
-        use_json=True,
-    )
+    gen.scan_all(args.targets, None, use_json=True)

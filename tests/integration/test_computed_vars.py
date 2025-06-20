@@ -172,8 +172,9 @@ def token(computed_vars: AppHarness, driver: WebDriver) -> str:
         The token for the connected client
     """
     assert computed_vars.app_instance is not None
-    token_input = driver.find_element(By.ID, "token")
-    assert token_input
+    token_input = AppHarness.poll_for_or_raise_timeout(
+        lambda: driver.find_element(By.ID, "token")
+    )
 
     # wait for the backend connection to send the token
     token = computed_vars.poll_for_value(token_input, timeout=DEFAULT_TIMEOUT * 2)

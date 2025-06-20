@@ -7,8 +7,11 @@ from pytest_mock import MockerFixture
 
 from reflex import constants
 from reflex.compiler import compiler, utils
+from reflex.components.base import document
 from reflex.constants.compiler import PageNames
 from reflex.utils.imports import ImportVar, ParsedImportDict
+from reflex.vars.base import Var
+from reflex.vars.sequence import LiteralStringVar
 
 
 @pytest.mark.parametrize(
@@ -155,6 +158,7 @@ def test_compile_stylesheets(tmp_path: Path, mocker: MockerFixture):
             / "styles"
             / (PageNames.STYLESHEET_ROOT + ".css")
         ),
+        "@import url('./__reflex_style_reset.css'); \n"
         "@import url('@radix-ui/themes/styles.css'); \n"
         "@import url('https://fonts.googleapis.com/css?family=Sofia&effect=neon|outline|emboss|shadow-multiple'); \n"
         "@import url('https://cdn.jsdelivr.net/npm/bootstrap@3.3.7/dist/css/bootstrap.min.css'); \n"
@@ -215,6 +219,7 @@ def test_compile_stylesheets_scss_sass(tmp_path: Path, mocker: MockerFixture):
             / "styles"
             / (PageNames.STYLESHEET_ROOT + ".css")
         ),
+        "@import url('./__reflex_style_reset.css'); \n"
         "@import url('@radix-ui/themes/styles.css'); \n"
         "@import url('./style.css'); \n"
         f"@import url('./{Path('preprocess') / Path('styles_a.css')!s}'); \n"
@@ -233,6 +238,7 @@ def test_compile_stylesheets_scss_sass(tmp_path: Path, mocker: MockerFixture):
             / "styles"
             / (PageNames.STYLESHEET_ROOT + ".css")
         ),
+        "@import url('./__reflex_style_reset.css'); \n"
         "@import url('@radix-ui/themes/styles.css'); \n"
         "@import url('./style.css'); \n"
         f"@import url('./{Path('preprocess') / Path('styles_a.css')!s}'); \n"
@@ -279,6 +285,45 @@ def test_compile_stylesheets_exclude_tailwind(tmp_path, mocker: MockerFixture):
 
     assert compiler.compile_root_stylesheet(stylesheets) == (
         str(Path(".web") / "styles" / (PageNames.STYLESHEET_ROOT + ".css")),
+        "@import url('./__reflex_style_reset.css'); \n@import url('@radix-ui/themes/styles.css'); \n@import url('./style.css'); \n",
+    )
+
+
+def test_compile_stylesheets_no_reset(tmp_path: Path, mocker: MockerFixture):
+    """Test that stylesheets compile correctly without reset styles.
+
+    Args:
+        tmp_path: The test directory.
+        mocker: Pytest mocker object.
+    """
+    project = tmp_path / "test_project"
+    project.mkdir()
+
+    assets_dir = project / "assets"
+    assets_dir.mkdir()
+
+    (assets_dir / "style.css").write_text(
+        "button.rt-Button {\n\tborder-radius:unset !important;\n}"
+    )
+    mocker.patch("reflex.compiler.compiler.Path.cwd", return_value=project)
+    mocker.patch(
+        "reflex.compiler.compiler.get_web_dir",
+        return_value=project / constants.Dirs.WEB,
+    )
+    mocker.patch(
+        "reflex.compiler.utils.get_web_dir", return_value=project / constants.Dirs.WEB
+    )
+
+    stylesheets = ["/style.css"]
+
+    # Test with reset_style=False
+    assert compiler.compile_root_stylesheet(stylesheets, reset_style=False) == (
+        str(
+            project
+            / constants.Dirs.WEB
+            / "styles"
+            / (PageNames.STYLESHEET_ROOT + ".css")
+        ),
         "@import url('@radix-ui/themes/styles.css'); \n@import url('./style.css'); \n",
     )
 
@@ -310,25 +355,40 @@ def test_create_document_root():
     root = utils.create_document_root()
     root.render()
     assert isinstance(root, utils.Html)
-    assert isinstance(root.children[0], utils.DocumentHead)
+    assert isinstance(root.children[0], utils.Head)
     # Default language.
-    assert root.lang == "en"  # pyright: ignore [reportAttributeAccessIssue]
+    lang = root.lang  # pyright: ignore [reportAttributeAccessIssue]
+    assert isinstance(lang, LiteralStringVar)
+    assert lang.equals(Var.create("en"))
     # No children in head.
-    assert len(root.children[0].children) == 0
+    assert len(root.children[0].children) == 4
+    assert isinstance(root.children[0].children[0], utils.Meta)
+    char_set = root.children[0].children[0].char_set  # pyright: ignore [reportAttributeAccessIssue]
+    assert isinstance(char_set, LiteralStringVar)
+    assert char_set.equals(Var.create("utf-8"))
+    assert isinstance(root.children[0].children[1], utils.Meta)
+    name = root.children[0].children[1].name  # pyright: ignore [reportAttributeAccessIssue]
+    assert isinstance(name, LiteralStringVar)
+    assert name.equals(Var.create("viewport"))
+    assert isinstance(root.children[0].children[2], document.Meta)
+    assert isinstance(root.children[0].children[3], document.Links)
 
     # Test with components.
     comps = [
-        utils.NextScript.create(src="foo.js"),
-        utils.NextScript.create(src="bar.js"),
+        utils.Scripts.create(src="foo.js"),
+        utils.Scripts.create(src="bar.js"),
     ]
     root = utils.create_document_root(
         head_components=comps,
         html_lang="rx",
         html_custom_attrs={"project": "reflex"},
     )
-    # Two children in head.
     assert isinstance(root, utils.Html)
-    assert len(root.children[0].children) == 2
-    assert root.lang == "rx"  # pyright: ignore [reportAttributeAccessIssue]
+    assert len(root.children[0].children) == 4
+    names = [c.tag for c in root.children[0].children]
+    assert names == ["Scripts", "Scripts", "Meta", "Links"]
+    lang = root.lang  # pyright: ignore [reportAttributeAccessIssue]
+    assert isinstance(lang, LiteralStringVar)
+    assert lang.equals(Var.create("rx"))
     assert isinstance(root.custom_attrs, dict)
     assert root.custom_attrs == {"project": "reflex"}
