@@ -10,6 +10,7 @@ from selenium.webdriver import Firefox
 from selenium.webdriver.common.by import By
 from selenium.webdriver.remote.webdriver import WebDriver
 
+from reflex.constants.state import FIELD_MARKER
 from reflex.state import (
     State,
     StateManagerDisk,
@@ -251,8 +252,9 @@ async def test_client_side_state(
     assert client_side.frontend_url is not None
 
     def poll_for_token():
-        token_input = driver.find_element(By.ID, "token")
-        assert token_input
+        token_input = AppHarness.poll_for_or_raise_timeout(
+            lambda: driver.find_element(By.ID, "token")
+        )
 
         # wait for the backend connection to send the token
         token = client_side.poll_for_value(token_input)
@@ -264,8 +266,8 @@ async def test_client_side_state(
         state_var_input = driver.find_element(By.ID, "state_var")
         input_value_input = driver.find_element(By.ID, "input_value")
         set_sub_state_button = driver.find_element(By.ID, "set_sub_state")
-        AppHarness._poll_for(lambda: state_var_input.get_attribute("value") == "")
-        AppHarness._poll_for(lambda: input_value_input.get_attribute("value") == "")
+        AppHarness.expect(lambda: state_var_input.get_attribute("value") == "")
+        AppHarness.expect(lambda: input_value_input.get_attribute("value") == "")
 
         # Set the values.
         state_var_input.send_keys(var)
@@ -277,8 +279,8 @@ async def test_client_side_state(
         state_var_input = driver.find_element(By.ID, "state_var")
         input_value_input = driver.find_element(By.ID, "input_value")
         set_sub_sub_state_button = driver.find_element(By.ID, "set_sub_sub_state")
-        AppHarness._poll_for(lambda: state_var_input.get_attribute("value") == "")
-        AppHarness._poll_for(lambda: input_value_input.get_attribute("value") == "")
+        AppHarness.expect(lambda: state_var_input.get_attribute("value") == "")
+        AppHarness.expect(lambda: input_value_input.get_attribute("value") == "")
 
         # Set the values.
         state_var_input.send_keys(var)
@@ -328,7 +330,7 @@ async def test_client_side_state(
     # no cookies should be set yet!
     assert not driver.get_cookies()
     local_storage_items = local_storage.items()
-    local_storage_items.pop("last_compiled_time", None)
+    local_storage_items.pop("last_compiled_theme", None)
     local_storage_items.pop("theme", None)
     assert not local_storage_items
 
@@ -360,28 +362,28 @@ async def test_client_side_state(
     )
 
     exp_cookies = {
-        f"{sub_state_name}.c1": {
+        f"{sub_state_name}.c1" + FIELD_MARKER: {
             "domain": "localhost",
             "httpOnly": False,
-            "name": f"{sub_state_name}.c1",
+            "name": f"{sub_state_name}.c1" + FIELD_MARKER,
             "path": "/",
             "sameSite": "Lax",
             "secure": False,
             "value": "c1%20value",
         },
-        f"{sub_state_name}.c2": {
+        f"{sub_state_name}.c2" + FIELD_MARKER: {
             "domain": "localhost",
             "httpOnly": False,
-            "name": f"{sub_state_name}.c2",
+            "name": f"{sub_state_name}.c2" + FIELD_MARKER,
             "path": "/",
             "sameSite": "Lax",
             "secure": False,
             "value": "c2%20value",
         },
-        f"{sub_state_name}.c4": {
+        f"{sub_state_name}.c4" + FIELD_MARKER: {
             "domain": "localhost",
             "httpOnly": False,
-            "name": f"{sub_state_name}.c4",
+            "name": f"{sub_state_name}.c4" + FIELD_MARKER,
             "path": "/",
             "sameSite": "Strict",
             "secure": False,
@@ -396,26 +398,26 @@ async def test_client_side_state(
             "secure": False,
             "value": "c6%20value",
         },
-        f"{sub_state_name}.c7": {
+        f"{sub_state_name}.c7" + FIELD_MARKER: {
             "domain": "localhost",
             "httpOnly": False,
-            "name": f"{sub_state_name}.c7",
+            "name": f"{sub_state_name}.c7" + FIELD_MARKER,
             "path": "/",
             "sameSite": "Lax",
             "secure": False,
             "value": "c7%20value",
         },
-        f"{sub_sub_state_name}.c1s": {
+        f"{sub_sub_state_name}.c1s" + FIELD_MARKER: {
             "domain": "localhost",
             "httpOnly": False,
-            "name": f"{sub_sub_state_name}.c1s",
+            "name": f"{sub_sub_state_name}.c1s" + FIELD_MARKER,
             "path": "/",
             "sameSite": "Lax",
             "secure": False,
             "value": "c1s%20value",
         },
     }
-    AppHarness._poll_for(
+    AppHarness.expect(
         lambda: all(cookie_key in cookie_info_map(driver) for cookie_key in exp_cookies)
     )
     cookies = cookie_info_map(driver)
@@ -426,13 +428,15 @@ async def test_client_side_state(
 
     # Test cookie with expiry by itself to avoid timing flakiness
     set_sub("c3", "c3 value")
-    AppHarness._poll_for(lambda: f"{sub_state_name}.c3" in cookie_info_map(driver))
-    c3_cookie = cookie_info_map(driver)[f"{sub_state_name}.c3"]
+    AppHarness.expect(
+        lambda: f"{sub_state_name}.c3" + FIELD_MARKER in cookie_info_map(driver)
+    )
+    c3_cookie = cookie_info_map(driver)[f"{sub_state_name}.c3" + FIELD_MARKER]
     assert c3_cookie.pop("expiry") is not None
     assert c3_cookie == {
         "domain": "localhost",
         "httpOnly": False,
-        "name": f"{sub_state_name}.c3",
+        "name": f"{sub_state_name}.c3" + FIELD_MARKER,
         "path": "/",
         "sameSite": "Lax",
         "secure": False,
@@ -441,24 +445,34 @@ async def test_client_side_state(
     await asyncio.sleep(2)  # wait for c3 to expire
     if not isinstance(driver, Firefox):
         # Note: Firefox does not remove expired cookies Bug 576347
-        assert f"{sub_state_name}.c3" not in cookie_info_map(driver)
+        assert f"{sub_state_name}.c3" + FIELD_MARKER not in cookie_info_map(driver)
 
     local_storage_items = local_storage.items()
-    local_storage_items.pop("last_compiled_time", None)
+    local_storage_items.pop("last_compiled_theme", None)
     local_storage_items.pop("theme", None)
-    assert local_storage_items.pop(f"{sub_state_name}.l1") == "l1 value"
-    assert local_storage_items.pop(f"{sub_state_name}.l2") == "l2 value"
+    assert local_storage_items.pop(f"{sub_state_name}.l1" + FIELD_MARKER) == "l1 value"
+    assert local_storage_items.pop(f"{sub_state_name}.l2" + FIELD_MARKER) == "l2 value"
     assert local_storage_items.pop("l3") == "l3 value"
-    assert local_storage_items.pop(f"{sub_state_name}.l4") == "l4 value"
-    assert local_storage_items.pop(f"{sub_sub_state_name}.l1s") == "l1s value"
+    assert local_storage_items.pop(f"{sub_state_name}.l4" + FIELD_MARKER) == "l4 value"
+    assert (
+        local_storage_items.pop(f"{sub_sub_state_name}.l1s" + FIELD_MARKER)
+        == "l1s value"
+    )
     assert not local_storage_items
 
     session_storage_items = session_storage.items()
     session_storage_items.pop("token", None)
-    assert session_storage_items.pop(f"{sub_state_name}.s1") == "s1 value"
-    assert session_storage_items.pop(f"{sub_state_name}.s2") == "s2 value"
+    assert (
+        session_storage_items.pop(f"{sub_state_name}.s1" + FIELD_MARKER) == "s1 value"
+    )
+    assert (
+        session_storage_items.pop(f"{sub_state_name}.s2" + FIELD_MARKER) == "s2 value"
+    )
     assert session_storage_items.pop("s3") == "s3 value"
-    assert session_storage_items.pop(f"{sub_sub_state_name}.s1s") == "s1s value"
+    assert (
+        session_storage_items.pop(f"{sub_sub_state_name}.s1s" + FIELD_MARKER)
+        == "s1s value"
+    )
     assert not session_storage_items
 
     assert c1.text == "c1 value"
@@ -481,10 +495,10 @@ async def test_client_side_state(
 
     # navigate to the /foo route
     with utils.poll_for_navigation(driver):
-        driver.get(client_side.frontend_url + "/foo")
+        driver.get(client_side.frontend_url.removesuffix("/") + "/foo/")
 
     # get new references to all cookie and local storage elements
-    c1 = driver.find_element(By.ID, "c1")
+    c1 = AppHarness.poll_for_or_raise_timeout(lambda: driver.find_element(By.ID, "c1"))
     c2 = driver.find_element(By.ID, "c2")
     c3 = driver.find_element(By.ID, "c3")
     c4 = driver.find_element(By.ID, "c4")
@@ -526,7 +540,9 @@ async def test_client_side_state(
     driver.refresh()
 
     # wait for the backend connection to send the token (again)
-    token_input = driver.find_element(By.ID, "token")
+    token_input = AppHarness.poll_for_or_raise_timeout(
+        lambda: driver.find_element(By.ID, "token")
+    )
     assert token_input
     token = client_side.poll_for_value(token_input)
     assert token is not None
@@ -569,11 +585,13 @@ async def test_client_side_state(
     assert s1s.text == "s1s value"
 
     # make sure c5 cookie shows up on the `/foo` route
-    AppHarness._poll_for(lambda: f"{sub_state_name}.c5" in cookie_info_map(driver))
-    assert cookie_info_map(driver)[f"{sub_state_name}.c5"] == {
+    AppHarness.expect(
+        lambda: f"{sub_state_name}.c5" + FIELD_MARKER in cookie_info_map(driver)
+    )
+    assert cookie_info_map(driver)[f"{sub_state_name}.c5" + FIELD_MARKER] == {
         "domain": "localhost",
         "httpOnly": False,
-        "name": f"{sub_state_name}.c5",
+        "name": f"{sub_state_name}.c5" + FIELD_MARKER,
         "path": "/foo/",
         "sameSite": "Lax",
         "secure": False,
@@ -593,7 +611,7 @@ async def test_client_side_state(
     set_sub("l6", "l6 value")
     l5 = driver.find_element(By.ID, "l5")
     l6 = driver.find_element(By.ID, "l6")
-    assert AppHarness._poll_for(lambda: l6.text == "l6 value")
+    AppHarness.expect(lambda: l6.text == "l6 value")
     assert l5.text == "l5 value"
 
     # Set session storage values in the new tab
@@ -601,7 +619,7 @@ async def test_client_side_state(
     s1 = driver.find_element(By.ID, "s1")
     s2 = driver.find_element(By.ID, "s2")
     s3 = driver.find_element(By.ID, "s3")
-    assert AppHarness._poll_for(lambda: s1.text == "other tab s1")
+    AppHarness.expect(lambda: s1.text == "other tab s1")
     assert s2.text == "s2 default"
     assert s3.text == ""
 
@@ -611,13 +629,13 @@ async def test_client_side_state(
     # The values should have updated automatically.
     l5 = driver.find_element(By.ID, "l5")
     l6 = driver.find_element(By.ID, "l6")
-    assert AppHarness._poll_for(lambda: l6.text == "l6 value")
+    AppHarness.expect(lambda: l6.text == "l6 value")
     assert l5.text == "l5 value"
 
     s1 = driver.find_element(By.ID, "s1")
     s2 = driver.find_element(By.ID, "s2")
     s3 = driver.find_element(By.ID, "s3")
-    assert AppHarness._poll_for(lambda: s1.text == "s1 value")
+    AppHarness.expect(lambda: s1.text == "s1 value")
     assert s2.text == "s2 value"
     assert s3.text == "s3 value"
 
@@ -729,8 +747,9 @@ async def test_client_side_state(
     driver.refresh()
 
     # wait for the backend connection to send the token (again)
-    token_input = driver.find_element(By.ID, "token")
-    assert token_input
+    token_input = AppHarness.poll_for_or_raise_timeout(
+        lambda: driver.find_element(By.ID, "token")
+    )
     token = client_side.poll_for_value(token_input)
     assert token is not None
 
